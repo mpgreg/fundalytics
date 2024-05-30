@@ -1,0 +1,112 @@
+{
+  "class": "Fundalytics",
+  "description": "Multi-modal search of house listings",
+  "vectorizer": "multi2vec-clip",
+  "moduleConfig": {
+    "multi2vec-clip": {
+      "textFields": ["descrip"],
+      "imageFields": ["image_enc"],
+      "weights": {
+        "textFields": [0.7],
+        "imageFields": [0.3]
+      }
+    }
+  },
+  "properties": [
+    {
+      "dataType": ["text"],
+      "name": "house_id",
+      "skip": true
+    },
+    {
+      "dataType": ["text"],
+      "name": "url",
+      "skip": true
+    },
+    {
+      "dataType": ["text"],
+      "name": "city",
+      "skip": true
+    },
+    {
+      "dataType": ["text"],
+      "name": "house_type",
+      "skip": true
+    },
+    {
+      "dataType": ["text"],
+      "name": "building_type",
+      "skip": true
+    },
+    {
+      "dataType": ["number"],
+      "name": "price",
+      "skip": true
+    },
+    {
+      "dataType": ["number"],
+      "name": "price_m2",
+      "skip": true
+    },
+    {
+      "dataType": ["int"],
+      "name": "room",
+      "skip": true
+    },
+    {
+      "dataType": ["int"],
+      "name": "bedroom",
+      "skip": true
+    },
+    {
+      "dataType": ["number"],
+      "name": "bathroom",
+      "skip": true
+    },
+    {
+      "dataType": ["number"],
+      "name": "living_area",
+      "skip": true
+    },
+    {
+      "dataType": ["text"],
+      "name": "energy_label",
+      "skip": true
+    },
+    {
+      "dataType": ["text"],
+      "name": "zip",
+      "skip": true
+    },
+    {
+      "dataType": ["text"],
+      "name": "address",
+      "skip": true
+    },
+    {
+      "dataType": ["int"],
+      "name": "year_built",
+      "skip": true
+    },
+    {
+      "dataType": ["int"],
+      "name": "house_age",
+      "skip": true
+    },
+    {
+      "dataType": ["text"],
+      "name": "descrip",
+      "skip": false
+    },
+    {
+      "dataType": ["text"],
+      "name": "image_url",
+      "skip": true
+    },
+    {
+      "dataType": ["blob"],
+      "name": "image_enc",
+      "skip": false
+    }
+  ]
+}
