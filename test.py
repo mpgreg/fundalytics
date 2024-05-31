@@ -5,6 +5,7 @@ import requests
 import weaviate
 from weaviate.util import generate_uuid5
 import json
+from weaviate.classes.query import Filter
 
 
 COLLECTION_DEF_FILE = 'weaviate/application/fundalytics/collection_def.json'
@@ -55,3 +56,28 @@ try:
 finally:
     item
     #client.close()
+
+vectors = collection.query.fetch_objects(
+    include_vector=True, 
+    filters=Filter.by_property("city").equal(city_name),
+    return_properties=['house_id']
+    )
+
+vector_df = pd.DataFrame(
+    [{'house_id': house.properties['house_id'], 
+      'vector': house.vector['default']} 
+      for house in vectors.objects])
+
+import numpy as np
+from sklearn.manifold import TSNE
+
+vectors_array = np.array(vector_df['vector'].values.tolist())
+
+reduced_vectors = TSNE(n_components=3, learning_rate='auto', init='pca', perplexity=3).fit_transform(vectors_array)
+pd.concat([vector_df, pd.DataFrame(reduced_vectors, columns=['x','y','z'])], axis=1)
+
+
+import plotly.express as px
+fig = px.scatter_3d(ingest_df, x='sepal_length', y='sepal_width', z='petal_width',
+                    color='petal_length', symbol='species')
+fig.show()
