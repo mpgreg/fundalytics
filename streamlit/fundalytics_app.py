@@ -1,5 +1,3 @@
-import webbrowser
-from datetime import datetime
 from pathlib import Path
 from PIL import Image
 import streamlit as st
@@ -10,13 +8,12 @@ import base64
 import requests
 import weaviate
 from weaviate.util import generate_uuid5
-from weaviate.classes.query import Filter
+from weaviate.classes.query import Filter, MetadataQuery
 import json
 import plotly.express as px
 import numpy as np
 from sklearn.manifold import TSNE
-
-
+import validators
 
 COLLECTION_DEF_FILE = 'collection_def.json'
 CITY_LIST_URL = 'https://simplemaps.com/static/data/country-cities/nl/nl.json'
@@ -37,44 +34,30 @@ else:
     collection_def = st.session_state["collection_def"]
 
 if "collection" not in st.session_state:
-    collection = weaviate_client.collections.get(collection_def['class'])
-    st.session_state["collection"] = collection
+    collection = None
 else:
     collection = st.session_state["collection"]
 
-if "city_dict" not in st.session_state:
-    city_dict = requests.get(CITY_LIST_URL).json()
-    st.session_state["city_dict"] = city_dict
-else:
-    city_dict = st.session_state["city_dict"]
-
 if "city_list" not in st.session_state:
+    city_dict = requests.get(CITY_LIST_URL).json()
     city_list = [city['city'].lower() for city in city_dict]
     st.session_state["city_list"] = city_list
 else:
     city_list = st.session_state["city_list"]
 
-if "import_df" not in st.session_state:
-    import_df = pd.DataFrame()
+if "ingest_df" not in st.session_state:
+    ingest_df = pd.DataFrame()
 else:
-    import_df = st.session_state["import_df"]
-
-if "display_df" not in st.session_state:
-    display_df = pd.DataFrame()
-else:
-    display_df = st.session_state["display_df"]
-
-if "viewer_df" not in st.session_state:
-    viewer_df = pd.DataFrame()
-else:
-    viewer_df = st.session_state["viewer_df"]
-
+    ingest_df = st.session_state["ingest_df"]
+ 
 def scrape_and_process_data(scraper: FundaScraper) -> pd.DataFrame:
 
-    df = scraper.run(raw_data=False, save=False)
-    df.set_index('house_id', inplace=True)
+    download_df = scraper.run(raw_data=False, save=False)
 
-    photos_df = df['photo'].apply(lambda x: x.split(',')).explode()
+    download_df['house_id'] = download_df['house_id'].apply(str)
+    download_df.set_index('house_id', inplace=True)
+
+    photos_df = download_df['photo'].apply(lambda x: x.split(',')).explode()
     photos_df = photos_df.apply(lambda x: x.split()).apply(pd.Series)
     photos_df = photos_df[photos_df[1] == "180w"].drop(1, axis=1)
 
@@ -85,16 +68,32 @@ def scrape_and_process_data(scraper: FundaScraper) -> pd.DataFrame:
         lambda x: base64.b64encode(requests.get(x).content).decode("utf-8")
         )
     
-    ingest_df = df.join(cover_photos).drop('photo', axis=1).reset_index()
+    ingest_df = download_df.join(cover_photos).drop('photo', axis=1).reset_index()
+    
     ingest_df['uuid'] = ingest_df['house_id'].apply(lambda x: generate_uuid5(x))
 
-    ingest_df['house_id'] = ingest_df['house_id'].apply(str)
-
+    ingest_df['html_url'] = ingest_df.apply(
+        lambda x: '<a href="{house_url}"></a>'.format(
+            house_url=x.url),
+        axis=1
+        )
+    
+    ingest_df['linked_image'] = ingest_df.apply(
+        lambda x: '<a href="{house_url}"><img src="{image_url}" width="60" ></a>'.format(
+            image_url=x.image_url,
+            house_url=x.url),
+        axis=1
+        )
+    
     return ingest_df
 
-def import_data(ingest_df: pd.DataFrame):
+def import_data(ingest_df: pd.DataFrame) -> weaviate.collections.Collection:
 
-    try:
+    try:        
+        weaviate_client.collections.delete(collection_def['class'])
+
+        collection = weaviate_client.collections.create_from_dict(config=collection_def)
+        
         results = []
         with collection.batch.dynamic() as batch:
             for data_row in ingest_df.to_dict('records'):
@@ -105,6 +104,10 @@ def import_data(ingest_df: pd.DataFrame):
     except:
         print("error")
 
+    return collection
+
+def reset_search():
+    st.session_state.search_input = ""
 
 header_image = Image.open(Path(__file__).parent / "logo.png")
     
@@ -118,11 +121,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 disclaimer = dedent("""
-    <p><small>Disclaimer & Limitations\n\n 
-    This application is a proof-of-concept for multi-modal search and is not created, supported or endorsed by Funda.</small></p>""")
+                    <p><small>Disclaimer & Limitations\n\n 
+                    This application is a proof-of-concept for multi-modal search and is not created, 
+                    supported or endorsed by Funda. Funda scraping is only allowed for personal use.  
+                    Any commercial use of this application is prohibited. The author holds no liability 
+                    for any misuse of the application.
+                    </small></p>
+                    """)
 
 with st.container():
-    title_col, logo_col = st.columns([8, 2])
+    title_col, logo_col = st.columns([7, 4])
     with title_col:
         st.title("Welcome to Fundalytics!")
         st.write(dedent("""
@@ -168,15 +176,13 @@ with st.sidebar:
             label="Minimum size in m2",
             )
     
-    days_since = st.selectbox(
-            label="Days since listed",
-            options=[None, 1, 3, 5, 10, 30],
-            ) 
+    # days_since = st.selectbox(
+    #         label="Days since listed",
+    #         options=[None, 1, 3, 5, 10, 30],
+    #         ) 
     
     st.write("** denotes mandatory fields.")
     
-    #import_df = None
-
     if city_name and want_to and property_type:
         
         if st.button(label="Import Data"):
@@ -185,53 +191,30 @@ with st.sidebar:
                 area=city_name, 
                 want_to=want_to, 
                 property_type=property_type,
-                days_since=days_since,
+                # days_since=days_since,
                 min_price=min_price,
                 max_price=max_price,
                 find_past=False, 
                 page_start=1, 
                 n_pages=1)
-            
-            import_df = scrape_and_process_data(scraper=scraper)
 
-            st.session_state["import_df"] = import_df
+            ingest_df = scrape_and_process_data(scraper=scraper)
 
-            collection.data.delete_many(
-                where=Filter.by_property("city").equal(city_name)
-            )
+            st.session_state["ingest_df"] = ingest_df
 
-            import_data(import_df)
+            collection = import_data(ingest_df)
 
-# collection.query.fetch_objects(filters=Filter.by_property("city").equal(city_name))
+            st.session_state["collection"] = collection
 
 listing_tab, threedviewer_tab, image_search_tab = st.tabs(
-    ["Data Viewer", "3D Viewer", "Image Search"]
+    ["Data Viewer", "3D Viewer", "Multi-Modal Search"]
 )
-
-if not import_df.empty:
-
-    display_df = import_df.drop(['image_enc','descrip', 'uuid'], axis=1)
-    
-    display_df['html_url'] = display_df.apply(
-        lambda x: '<a href="{house_url}"></a>'.format(
-            house_url=x.url),
-        axis=1
-        )
-    
-    display_df['linked_image'] = display_df.apply(
-        lambda x: '<a href="{house_url}"><img src="{image_url}" width="60" ></a>'.format(
-            image_url=x.image_url,
-            house_url=x.url),
-        axis=1
-        )
-
-    st.session_state["display_df"] = display_df
 
 with listing_tab:
     
     st.header("Data Viewer")
 
-    if display_df.empty:
+    if ingest_df.empty:
         
         st.write("⚠️ Select at least a city and transaction type in the side bar.")
     
@@ -239,9 +222,27 @@ with listing_tab:
 
         st.write(f"Summary for {property_type}s to {want_to} in {city_name}.")
 
-        display_columns=['address', 'living_area', 'price', 'price_m2', 'bedroom', 'bathroom', 'energy_label']
+        display_columns=[
+            'address', 
+            'living_area', 
+            'price', 
+            'price_m2', 
+            'bedroom', 
+            'bathroom', 
+            'energy_label']
 
-        dataviewer_df = display_df.set_index('linked_image')
+        response = collection.query.fetch_objects(
+            include_vector=False, 
+            filters=(
+                Filter.by_property("city").equal(city_name)
+                ),
+            return_properties=display_columns + ['linked_image']
+            )
+        
+        data_list = []
+        _ = [data_list.append(obj.properties) for obj in response.objects]
+
+        dataviewer_df = pd.DataFrame(data_list).set_index('linked_image')
         dataviewer_df.index.name = ''
         
         st.markdown(
@@ -250,11 +251,10 @@ with listing_tab:
                 border=0), 
             unsafe_allow_html=True)
         
-
 with threedviewer_tab:
     st.header("3D Viewer")
 
-    if display_df.empty:
+    if ingest_df.empty:
         
         st.write("⚠️ Select at least a city and transaction type in the side bar.")
 
@@ -262,18 +262,22 @@ with threedviewer_tab:
 
         st.write(f"3D visualization for embedded {property_type}s to {want_to} in {city_name}.")
 
-        display_columns = ['url','price','x','y','z']
+        display_columns = ['house_id', 'url','price']
         
-        vectors = collection.query.fetch_objects(
+        response = collection.query.fetch_objects(
             include_vector=True, 
-            filters=Filter.by_property("city").equal(city_name),
-            return_properties=['house_id']
+            filters=(
+                Filter.by_property("city").equal(city_name)
+                ),
+            return_properties=display_columns
             )
+        
+        _ = [obj.properties.update({'vector': obj.vector['default']}) for obj in response.objects]
+        
+        data_list = []
+        _ = [data_list.append(obj.properties) for obj in response.objects]
 
-        vector_df = pd.DataFrame(
-            [{'house_id': house.properties['house_id'], 
-            'vector': house.vector['default']} 
-            for house in vectors.objects])
+        vector_df = pd.DataFrame(data_list)
 
         vectors_array = np.array(vector_df['vector'].values.tolist())
 
@@ -285,15 +289,15 @@ with threedviewer_tab:
         ).fit_transform(vectors_array)
 
         vector_df = pd.concat(
-            [vector_df, 
-            pd.DataFrame(reduced_vectors, columns=['x','y','z'])], 
+            [
+                vector_df, 
+                pd.DataFrame(reduced_vectors, columns=['x','y','z'])
+                ], 
             axis=1
         ).set_index('house_id')
-
-        viewer_df = display_df.set_index('house_id').join(vector_df)[display_columns]
         
         fig = px.scatter_3d(
-            viewer_df, 
+            vector_df, 
             x='x', 
             y='y', 
             z='z', 
@@ -305,7 +309,6 @@ with threedviewer_tab:
                 'y': False,
                 'z': False,
                 },
-            # custom_data='url',
             )
         
         fig.update_layout(
@@ -315,6 +318,76 @@ with threedviewer_tab:
         st.plotly_chart(
             figure_or_data=fig, 
             use_container_width=True,
-            on_select=webbrowser.open_new_tab,
-            selection_mode='box'
             )
+        
+with image_search_tab:
+    st.header("Multi-Modal Search")
+
+    display_columns = [
+        "linked_image",
+        "address", 
+        "living_area", 
+        "price", 
+        "price_m2", 
+        "bedroom", 
+        "bathroom", 
+        "energy_label"]
+
+    if ingest_df.empty:
+        
+        st.write("⚠️ Select at least a city and transaction type in the side bar.")
+
+    else:
+
+        search_string = st.text_input(
+            label='Enter a URL for an image or a text description to find related properties.',
+            key='search_input',
+            help='https://cloud.funda.nl/valentina_media/191/337/476_180x120.jpg or "overdekt balkon"'
+        )
+
+        if search_string:
+            st.button(
+                label='Reset Input',
+                on_click=reset_search
+            )
+            
+            st.write("Searching for objects similar to:")
+
+            if validators.url(search_string):
+
+                st.image(search_string)
+            
+                image_content = requests.get(search_string).content
+                
+                search_image = base64.b64encode(image_content).decode("utf-8")
+
+                response = collection.query.near_image(
+                    near_image=search_image,
+                    return_properties=display_columns,
+                    limit=5,
+                    return_metadata=MetadataQuery(distance=True)
+                    )
+            else:
+                response = collection.query.near_text(
+                    query=search_string,
+                    return_properties=display_columns,
+                    limit=5,
+                    return_metadata=MetadataQuery(distance=True)
+                )
+            
+            _ = [obj.properties.update({'distance': obj.metadata.distance}) for obj in response.objects]
+
+            display_list = []
+            _ = [display_list.append(obj.properties) for obj in response.objects]
+
+            search_df = pd.DataFrame(display_list).set_index('linked_image')
+            search_df.index.name = ''
+            
+            st.markdown(
+                search_df.to_html(
+                    escape=False,
+                    border=0), 
+                unsafe_allow_html=True
+                )
+
+st.markdown(disclaimer, unsafe_allow_html=True)

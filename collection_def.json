@@ -107,6 +107,16 @@
       "dataType": ["blob"],
       "name": "image_enc",
       "skip": false
+    },
+    {
+      "dataType": ["text"],
+      "name": "html_url",
+      "skip": true
+    },
+    {
+      "dataType": ["text"],
+      "name": "linked_image",
+      "skip": true
     }
   ]
 }
