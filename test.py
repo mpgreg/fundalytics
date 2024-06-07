@@ -73,11 +73,19 @@ from sklearn.manifold import TSNE
 
 vectors_array = np.array(vector_df['vector'].values.tolist())
 
-reduced_vectors = TSNE(n_components=3, learning_rate='auto', init='pca', perplexity=3).fit_transform(vectors_array)
-pd.concat([vector_df, pd.DataFrame(reduced_vectors, columns=['x','y','z'])], axis=1)
+reduced_vectors = TSNE(
+    n_components=3, 
+    learning_rate='auto', 
+    init='pca', 
+    perplexity=3).fit_transform(vectors_array)
 
+vector_df = pd.concat(
+    [vector_df, 
+     pd.DataFrame(reduced_vectors, columns=['x','y','z'])], 
+    axis=1).set_index('house_id')
+
+display_df = ingest_df.set_index('house_id').join(vector_df)[['url','price','x','y','z']]
 
 import plotly.express as px
-fig = px.scatter_3d(ingest_df, x='sepal_length', y='sepal_width', z='petal_width',
-                    color='petal_length', symbol='species')
+fig = px.scatter_3d(display_df, x='x', y='y', z='z', color='price', custom_data='url')
 fig.show()

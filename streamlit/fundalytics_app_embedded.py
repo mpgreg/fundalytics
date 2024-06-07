@@ -7,6 +7,7 @@ import pandas as pd
 import base64
 import requests
 import weaviate
+from weaviate.embedded import EmbeddedOptions
 from weaviate.util import generate_uuid5
 from weaviate.classes.query import Filter, MetadataQuery
 import json
@@ -23,35 +24,71 @@ st.set_page_config(
     page_icon=str(Path(__file__).parent / "icon.png"), 
     layout='wide')
 
-if "weaviate_client" not in st.session_state:
-    weaviate_client = weaviate.connect_to_local()
-    st.session_state["weaviate_client"] = weaviate_client
+if 'collection_def' in st.session_state:
+    collection_def = st.session_state['collection_def']
 else:
-    weaviate_client = st.session_state["weaviate_client"]
-
-if "collection_def" not in st.session_state:
     with open(COLLECTION_DEF_FILE) as f:
         collection_def = json.load(f)
-    st.session_state["collection_def"] = collection_def
-else:
-    collection_def = st.session_state["collection_def"]
+    st.session_state['collection_def'] = collection_def
 
-if "collection" not in st.session_state:
-    collection = None
+if 'weaviate_client' in st.session_state:
+    weaviate_client  = st.session_state['weaviate_client']
 else:
-    collection = st.session_state["collection"]
+    weaviate_client = weaviate.WeaviateClient(
+        embedded_options=EmbeddedOptions(
+            additional_env_vars={
+                "ENABLE_MODULES": "multi2vec-clip",
+                "DEFAULT_VECTORIZER_MODULE": "multi2vec-clip",
+                "CLIP_INFERENCE_API": "http://localhost:8081"
+            }
+        )
+    )
+    st.session_state['weaviate_client'] = weaviate_client
 
-if "city_list" not in st.session_state:
+if not weaviate_client.is_live():
+    try:
+        weaviate_client.connect()
+        st.session_state['weaviate_client'] = weaviate_client
+
+    except Exception as e:
+        ### Due to multi-threading in fundascraper and streamlit page refreshes we may need to 
+        ### connect to an existing session.  This is quite a hack
+
+        if isinstance(e, weaviate.exceptions.WeaviateStartUpError) and \
+            "processes are already listening on ports" in e.message:
+            
+            existing_port = 8079
+            existing_grpcport = 50060
+            weaviate_client = weaviate.connect_to_local(
+                port=existing_port,
+                grpc_port=existing_grpcport
+                )
+            weaviate_client.connect()
+            st.session_state['weaviate_client'] = weaviate_client
+
+        else:
+            raise e
+
+if 'collection' in st.session_state:
+    collection = st.session_state['collection']
+else:
+    if weaviate_client.collections.exists(name=collection_def['class']):
+        collection = weaviate_client.collections.get(name=collection_def['class'])
+        st.session_state['collection'] = collection
+    else:
+        collection = None
+
+if 'city_list' in st.session_state:
+    city_list = st.session_state['city_list']
+else:
     city_dict = requests.get(CITY_LIST_URL).json()
     city_list = [city['city'].lower() for city in city_dict]
-    st.session_state["city_list"] = city_list
-else:
-    city_list = st.session_state["city_list"]
+    st.session_state['city_list'] = city_list
 
-if "ingest_df" not in st.session_state:
-    ingest_df = pd.DataFrame()
+if 'ingest_df' in st.session_state:
+    ingest_df = st.session_state['ingest_df']
 else:
-    ingest_df = st.session_state["ingest_df"]
+    ingest_df = pd.DataFrame()
  
 def scrape_and_process_data(scraper: FundaScraper) -> pd.DataFrame:
 
@@ -90,22 +127,26 @@ def scrape_and_process_data(scraper: FundaScraper) -> pd.DataFrame:
     
     return ingest_df
 
-def import_data(ingest_df: pd.DataFrame) -> weaviate.collections.Collection:
-
-    try:        
+def import_data(
+    weaviate_client: weaviate.Client, 
+    collection_def: dict,
+    collection: weaviate.collections.Collection | None,
+    ingest_df: pd.DataFrame) -> weaviate.collections.Collection:
+    
+    if weaviate_client.collections.exists(name=collection_def['class']):
         weaviate_client.collections.delete(collection_def['class'])
+    
+    collection = weaviate_client.collections.create_from_dict(collection_def)
 
-        collection = weaviate_client.collections.create_from_dict(config=collection_def)
-        
-        results = []
-        with collection.batch.dynamic() as batch:
-            for data_row in ingest_df.to_dict('records'):
-                results.append(batch.add_object(
-                    uuid=data_row['uuid'],
-                    properties=data_row,
-                ))
-    except:
-        print("error")
+    results = []
+    with collection.batch.dynamic() as batch:
+        for data_row in ingest_df.to_dict('records'):
+            results.append(batch.add_object(
+                uuid=data_row['uuid'],
+                properties=data_row,
+            ))
+
+    ##TODO: error handling for import results
 
     return collection
 
@@ -124,12 +165,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 disclaimer = dedent("""
-                    <p><small>Disclaimer & Limitations\n\n 
+                    <div id="footer">
+                    <div id="footer-content"><small>Disclaimer & Limitations\n\n 
                     This application is a proof-of-concept for multi-modal search and is not created, 
                     supported or endorsed by Funda. Funda scraping is only allowed for personal use.  
                     Any commercial use of this application is prohibited. The author holds no liability 
                     for any misuse of the application.
-                    </small></p>
+                    </small></div></div>
                     """)
 
 with st.container():
@@ -144,8 +186,6 @@ with st.container():
         st.image(header_image) 
 
 with st.sidebar:
-
-    ##DEBUG: city_name='amsterdam'; want_to='buy'; property_type='house'; min_price=max_price=min_sqm=days_since=None
 
     city_name = st.selectbox(
             label="Select a city name. **",
@@ -165,19 +205,19 @@ with st.sidebar:
             options=["house", "apartment"],
             )
     
-    min_price = st.number_input(
-            label="Minimum price in €",
-            value=None,
-            )
+    # min_price = st.number_input(
+    #         label="Minimum price in €",
+    #         value=None,
+    #         )
     
-    max_price = st.number_input(
-            label="Maximum price in €",
-            value=None,
-            )
+    # max_price = st.number_input(
+    #         label="Maximum price in €",
+    #         value=None,
+    #         )
     
-    min_sqm = st.number_input(
-            label="Minimum size in m2",
-            )
+    # min_sqm = st.number_input(
+    #         label="Minimum size in m2",
+    #         )
     
     # days_since = st.selectbox(
     #         label="Days since listed",
@@ -190,24 +230,30 @@ with st.sidebar:
         
         if st.button(label="Import Data"):
             
+            ##DEBUG: city_name='amsterdam'; want_to='buy'; property_type='house'; min_price=max_price=min_sqm=days_since=None
+
             scraper = FundaScraper(
                 area=city_name, 
                 want_to=want_to, 
                 property_type=property_type,
                 # days_since=days_since,
-                min_price=min_price,
-                max_price=max_price,
+                # min_price=min_price,
+                # max_price=max_price,
                 find_past=False, 
                 page_start=1, 
                 n_pages=1)
 
             ingest_df = scrape_and_process_data(scraper=scraper)
 
-            st.session_state["ingest_df"] = ingest_df
+            st.session_state['ingest_df'] = ingest_df
 
-            collection = import_data(ingest_df)
-
-            st.session_state["collection"] = collection
+            collection = import_data(
+                weaviate_client=weaviate_client,
+                collection_def=collection_def,
+                collection=collection,
+                ingest_df=ingest_df)
+            
+            st.session_state['collection'] = collection
 
 listing_tab, threedviewer_tab, image_search_tab = st.tabs(
     ["Data Viewer", "3D Viewer", "Multi-Modal Search"]
@@ -234,6 +280,11 @@ with listing_tab:
             'bathroom', 
             'energy_label']
 
+        if not weaviate_client.is_ready():
+            weaviate_client.connect()
+        
+        collection = weaviate_client.collections.get(collection_def['class'])
+        
         response = collection.query.fetch_objects(
             include_vector=False, 
             filters=(
@@ -241,7 +292,7 @@ with listing_tab:
                 ),
             return_properties=display_columns + ['linked_image']
             )
-        
+                
         data_list = []
         _ = [data_list.append(obj.properties) for obj in response.objects]
 
@@ -267,6 +318,11 @@ with threedviewer_tab:
 
         display_columns = ['house_id', 'url','price']
         
+        if not weaviate_client.is_ready():
+            weaviate_client.connect()
+        
+        collection = weaviate_client.collections.get(collection_def['class'])
+        
         response = collection.query.fetch_objects(
             include_vector=True, 
             filters=(
@@ -274,7 +330,7 @@ with threedviewer_tab:
                 ),
             return_properties=display_columns
             )
-        
+                
         _ = [obj.properties.update({'vector': obj.vector['default']}) for obj in response.objects]
         
         data_list = []
@@ -356,6 +412,11 @@ with image_search_tab:
             
             st.write("Searching for objects similar to:")
 
+            if not weaviate_client.is_ready():
+                weaviate_client.connect()
+            
+            collection = weaviate_client.collections.get(collection_def['class'])
+            
             if validators.url(search_string):
 
                 st.image(search_string)
@@ -363,7 +424,7 @@ with image_search_tab:
                 image_content = requests.get(search_string).content
                 
                 search_image = base64.b64encode(image_content).decode("utf-8")
-
+                
                 response = collection.query.near_image(
                     near_image=search_image,
                     return_properties=display_columns,
@@ -392,5 +453,5 @@ with image_search_tab:
                     border=0), 
                 unsafe_allow_html=True
                 )
-
+ 
 st.markdown(disclaimer, unsafe_allow_html=True)
