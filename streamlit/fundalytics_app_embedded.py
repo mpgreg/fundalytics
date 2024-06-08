@@ -23,8 +23,8 @@ COLLECTION_DEF_FILE = 'streamlit/collection_def.json'
 CITY_LIST_URL = 'https://simplemaps.com/static/data/country-cities/nl/nl.json'
 
 st.set_page_config(
-    page_title="Fundalytics", 
-    page_icon=str(Path(__file__).parent / "icon.png"), 
+    page_title='Fundalytics', 
+    page_icon=str(Path(__file__).parent / 'icon.png'), 
     layout='wide')
 
 def get_and_set_state(collection_def_file: str):
@@ -114,13 +114,13 @@ def scrape_and_process_data(scraper: FundaScraper) -> pd.DataFrame:
 
         photos_df = download_df['photo'].apply(lambda x: x.split(',')).explode()
         photos_df = photos_df.apply(lambda x: x.split()).apply(pd.Series)
-        photos_df = photos_df[photos_df[1] == "180w"].drop(1, axis=1)
+        photos_df = photos_df[photos_df[1] == '180w'].drop(1, axis=1)
 
         cover_photos = photos_df.groupby('house_id').agg(
             image_url = (0, lambda x: str(x.tolist()[0]))
             )
         cover_photos['image_enc'] = cover_photos['image_url'].apply(
-            lambda x: base64.b64encode(requests.get(x).content).decode("utf-8")
+            lambda x: base64.b64encode(requests.get(x).content).decode('utf-8')
             )
         
         ingest_df = download_df.join(cover_photos).drop('photo', axis=1).reset_index()
@@ -176,7 +176,7 @@ def reset_ingest():
 
 collection_def, collection, weaviate_client, city_list, ingest_df = get_and_set_state(COLLECTION_DEF_FILE)
 
-header_image = Image.open(Path(__file__).parent / "logo.png")
+header_image = Image.open(Path(__file__).parent / 'logo.png')
     
 st.markdown(
     """
@@ -220,14 +220,14 @@ with st.sidebar:
     want_to = st.selectbox(
             label="Select a transaction type. **",
             index=None,
-            options=["buy", "rent"],
+            options=['buy', 'rent'],
             on_change=reset_ingest,
             )
     
     property_type = st.selectbox(
             label="Select a property type. **",
             index=None,
-            options=["house", "apartment"],
+            options=['house', 'apartment'],
             on_change=reset_ingest,
             )
     
@@ -300,12 +300,12 @@ with st.sidebar:
             st.session_state['collection'] = collection
 
 listing_tab, threedviewer_tab, image_search_tab = st.tabs(
-    ["Data Viewer", "3D Viewer", "Multi-Modal Search"]
+    ['Data Viewer', '3D Viewer', 'Multi-Modal Search']
 )
 
 with listing_tab:
     
-    st.header("Data Viewer")
+    st.header('Data Viewer')
 
     if ingest_df.empty:
         
@@ -330,7 +330,7 @@ with listing_tab:
             listing_filters = None
         else:
             listing_filters = (
-                    Filter.by_property("city").equal(city_name)
+                    Filter.by_property('city').equal(city_name)
                     )
 
         listing_response = collection.query.fetch_objects(
@@ -360,8 +360,8 @@ with listing_tab:
                 editable=False,
                 )
             
-            gb.configure_column("linked_image",
-                headerName="",
+            gb.configure_column('linked_image',
+                headerName='',
                 cellRenderer=JsCode("""
                     class UrlCellRenderer {
                     init(params) {
@@ -388,7 +388,7 @@ with listing_tab:
                 )
                     
 with threedviewer_tab:
-    st.header("3D Viewer")
+    st.header('3D Viewer')
 
     if ingest_df.empty:
         
@@ -404,7 +404,7 @@ with threedviewer_tab:
             threed_filters = None
         else:
             threed_filters = (
-                    Filter.by_property("city").equal(city_name)
+                    Filter.by_property('city').equal(city_name)
                     )
 
         threed_response = collection.query.fetch_objects(
@@ -468,18 +468,18 @@ with threedviewer_tab:
                 )
         
 with image_search_tab:
-    st.header("Multi-Modal Search")
+    st.header('Multi-Modal Search')
 
     display_columns = [
-        "linked_image",
-        "address", 
+        'linked_image',
+        'address', 
         'city',
-        "living_area", 
-        "price", 
-        "price_m2", 
-        "bedroom", 
-        "bathroom", 
-        "energy_label"]
+        'living_area', 
+        'price', 
+        'price_m2', 
+        'bedroom', 
+        'bathroom', 
+        'energy_label']
 
     if ingest_df.empty:
         
@@ -505,7 +505,7 @@ with image_search_tab:
                 search_filters = None
             else:
                 search_filters = (
-                        Filter.by_property("city").equal(city_name)
+                        Filter.by_property('city').equal(city_name)
                         )            
             
             if validators.url(search_string):
@@ -514,7 +514,7 @@ with image_search_tab:
             
                 image_content = requests.get(search_string).content
                 
-                search_image = base64.b64encode(image_content).decode("utf-8")
+                search_image = base64.b64encode(image_content).decode('utf-8')
                 
                 search_response = collection.query.near_image(
                     near_image=search_image,
