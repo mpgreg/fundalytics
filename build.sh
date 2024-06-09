@@ -1,7 +1,8 @@
 #!/bin/sh
 
-docker buildx build --push --platform linux/arm64/v8,linux/amd64 -t mpgregor/fundalytics:0.0.3 .
-docker buildx imagetools create mpgregor/fundalytics:0.0.3 --tag mpgregor/fundalytics:latest
+git clone https://github.com/weaviate/sum-transformers-models
+docker buildx build --push --platform linux/arm64/v8,linux/amd64 -t mpgregor/fundalytics:0.0.4 .
+docker buildx imagetools create mpgregor/fundalytics:0.0.4 --tag mpgregor/fundalytics:latest
 
 ## Or build individual images
 # docker buildx build --load --platform linux/amd64 -t mpgregor/fundalytics:0.0.1_amd64 .

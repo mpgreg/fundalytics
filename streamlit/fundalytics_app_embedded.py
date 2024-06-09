@@ -17,6 +17,7 @@ from sklearn.manifold import TSNE
 import validators
 from st_aggrid import AgGrid, GridOptionsBuilder, ColumnsAutoSizeMode
 from st_aggrid.shared import JsCode
+from transformers import BertTokenizer
 
 
 COLLECTION_DEF_FILE = 'streamlit/collection_def.json'
@@ -42,9 +43,10 @@ def get_and_set_state(collection_def_file: str):
         weaviate_client = weaviate.WeaviateClient(
             embedded_options=EmbeddedOptions(
                 additional_env_vars={
-                    "ENABLE_MODULES": "multi2vec-clip",
+                    "ENABLE_MODULES": "multi2vec-clip,sum-transformers",
                     "DEFAULT_VECTORIZER_MODULE": "multi2vec-clip",
-                    "CLIP_INFERENCE_API": "http://localhost:8081"
+                    "CLIP_INFERENCE_API": "http://localhost:8081",
+                    "SUM_INFERENCE_API": "http://localhost:8080",
                 }
             )
         )
@@ -133,12 +135,16 @@ def scrape_and_process_data(scraper: FundaScraper) -> pd.DataFrame:
             axis=1
             )
         
-        ingest_df['linked_image'] = ingest_df.apply(
-            lambda x: '<a href="{house_url}" target="_blank"><img src="{image_url}" width="60" ></a>'.format(
-                image_url=x.image_url,
-                house_url=x.url),
-            axis=1
-            )
+        #snip overly wordy descriptions
+        #sum-tranformers has a 1024 token limit
+        tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
+
+        ingest_df['summary_tokens'] = ingest_df.descrip.apply(tokenizer)
+        ingest_df['descrip'] = ingest_df.summary_tokens.apply(
+            lambda x: tokenizer.decode(x.data['input_ids'][:1024]))
+
+        ingest_df.drop('summary_tokens', axis=1, inplace=True)
+
     else:
         ingest_df = download_df
     
@@ -167,6 +173,33 @@ def import_data(
 
     return collection
 
+def generate_summary(weaviate_client: weaviate.WeaviateClient, house_id: str) -> str:
+
+    summary_response = weaviate_client.graphql_raw_query(f"""
+            {{
+            Get {{
+                Fundalytics(
+                limit: 1
+                where: {{
+                    path: ["house_id"],
+                    operator: Equal,
+                    valueText: "{house_id}"
+                }}
+                ) {{
+                house_id
+                _additional {{
+                    summary(
+                    properties: ["descrip"],
+                    ) {{
+                    result
+                    }}
+                }}
+                }}
+            }}
+            }}""")
+    
+    return summary_response.get[collection_def['class']][0]['_additional']['summary'][0]['result']
+    
 def reset_search():
     st.session_state.search_input = ''
 
@@ -268,7 +301,7 @@ with st.sidebar:
 
             status_message = st.empty()
             
-            ##DEBUG: city_name='almelo'; want_to='buy'; property_type='house'; max_pages=1; min_price=max_price=min_sqm=days_since=None
+            ##DEBUG: city_name='nl'; want_to='buy'; property_type='house'; max_pages=1; min_price=10000000; max_price=min_sqm=days_since=None
 
             scraper = FundaScraper(
                 area=city_name, 
@@ -281,21 +314,45 @@ with st.sidebar:
                 page_start=1, 
                 n_pages=max_pages)
 
-            status_message.text('Scraping Data... please wait')
+            status_message.write('Scraping Data... please wait')
 
             ingest_df = scrape_and_process_data(scraper=scraper)
 
             st.session_state['ingest_df'] = ingest_df
 
-            status_message.text('Importing data to Weaviate Embedded instance... please wait')
+            status_message.write('Importing data to Weaviate Embedded instance... please wait')
 
-            collection = import_data(
-                weaviate_client=weaviate_client,
-                collection_def=collection_def,
-                collection=collection,
-                ingest_df=ingest_df)
-            
-            status_message.text('Import completed')
+            if not ingest_df.empty:
+                collection = import_data(
+                    weaviate_client=weaviate_client,
+                    collection_def=collection_def,
+                    collection=collection,
+                    ingest_df=ingest_df)
+                
+                status_message.write('Generating summaries')
+
+                ingest_df['description_summary'] = ingest_df.house_id.apply(
+                    lambda x: generate_summary(
+                        weaviate_client=weaviate_client,
+                        house_id=x))
+                
+                ingest_df['linked_image'] = ingest_df.apply(
+                    lambda x: '<a href="{house_url}" target="_blank" title="{description_summary}"><img src="{image_url}" width="60" ></a>'.format(
+                        image_url=x.image_url,
+                        house_url=x.url,
+                        description_summary=x.description_summary),
+                    axis=1
+                    )
+                
+                collection = import_data(
+                    weaviate_client=weaviate_client,
+                    collection_def=collection_def,
+                    collection=collection,
+                    ingest_df=ingest_df)
+
+                status_message.write('Import completed')
+            else:
+                status_message.write('No properties imported.  Try relaxing the search constraints.')
             
             st.session_state['collection'] = collection
 
@@ -339,7 +396,7 @@ with listing_tab:
             return_properties=['linked_image'] + listing_display_columns,
             limit=10000,
             )
-                
+
         listing_data_list = []
         _ = [listing_data_list.append(obj.properties) for obj in listing_response.objects]
 
@@ -360,7 +417,8 @@ with listing_tab:
                 editable=False,
                 )
             
-            gb.configure_column('linked_image',
+            gb.configure_column(
+                field='linked_image',
                 headerName='',
                 cellRenderer=JsCode("""
                     class UrlCellRenderer {
